@@ -8,30 +8,51 @@ function VerifyOTP() {
   const [message, setMessage] = useState("");
 
   const navigate = useNavigate();
-  const username = localStorage.getItem("username");
+
+  const email = localStorage.getItem("email");
+  const qrCode = localStorage.getItem("qr_code");
 
   const handleVerify = async (e) => {
     e.preventDefault();
 
+    const payload = {
+      email: email,
+      otp_code: otpCode,
+      biometric_verified: biometricVerified,
+    };
+
+    console.log("Sending OTP payload:", payload);
+
     try {
-      const res = await API.post("/verify-otp", {
-        username,
-        otp_code: otpCode,
-        biometric_verified: biometricVerified,
-      });
+      const res = await API.post("/verify-otp", payload);
 
       localStorage.setItem("token", res.data.access_token);
       setMessage(res.data.message);
 
       navigate("/dashboard");
     } catch (err) {
-      setMessage(err.response?.data?.detail || "OTP verification failed");
+      console.log("OTP error:", err.response?.data);
+
+      const detail = err.response?.data?.detail;
+
+      if (Array.isArray(detail)) {
+        setMessage(detail[0]?.msg || "OTP verification failed");
+      } else {
+        setMessage(detail || "OTP verification failed");
+      }
     }
   };
 
   return (
     <div style={{ padding: "20px" }}>
       <h2>Verify OTP</h2>
+
+      {qrCode && (
+        <div>
+          <h3>Scan QR Code</h3>
+          <img src={qrCode} alt="OTP QR Code" width="220" />
+        </div>
+      )}
 
       <form onSubmit={handleVerify}>
         <input

@@ -7,9 +7,10 @@ import pyotp
 import qrcode
 import io
 import base64
+import time
 
 from database import Base, engine, SessionLocal
-from models import User
+from models import User, MFAFactor, LoginAttempt
 from auth import (
     hash_password,
     verify_password,
@@ -34,17 +35,17 @@ app.add_middleware(
 
 
 class RegisterRequest(BaseModel):
-    username: str
+    email: str
     password: str
 
 
 class LoginRequest(BaseModel):
-    username: str
+    email: str
     password: str
 
 
 class OTPRequest(BaseModel):
-    username: str
+    email: str
     otp_code: str
     biometric_verified: bool
 
@@ -73,28 +74,42 @@ def root():
 
 @app.post("/register")
 def register(request: RegisterRequest, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(
-        User.username == request.username
-    ).first()
+    existing_user = db.query(User).filter(User.email == request.email).first()
 
     if existing_user:
-        raise HTTPException(status_code=400, detail="Username already exists")
+        raise HTTPException(status_code=400, detail="Email already exists")
 
     otp_secret = generate_otp_secret()
-    hashed_pw = hash_password(request.password)
+    password_hash = hash_password(request.password)
 
     new_user = User(
-        username=request.username,
-        hashed_password=hashed_pw,
-        otp_secret=otp_secret
+        email=request.email,
+        password_hash=password_hash
     )
 
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
 
+    totp_factor = MFAFactor(
+        user_id=new_user.id,
+        factor_type="totp",
+        secret=otp_secret,
+        is_verified=True
+    )
+
+    biometric_factor = MFAFactor(
+        user_id=new_user.id,
+        factor_type="biometric",
+        is_verified=False
+    )
+
+    db.add(totp_factor)
+    db.add(biometric_factor)
+    db.commit()
+
     totp_uri = pyotp.totp.TOTP(otp_secret).provisioning_uri(
-        name=request.username,
+        name=request.email,
         issuer_name="MFA-Cryptography-Project"
     )
 
@@ -102,57 +117,90 @@ def register(request: RegisterRequest, db: Session = Depends(get_db)):
 
     return {
         "message": "User registered successfully",
-        "username": request.username,
-        "otp_secret": otp_secret,
+        "email": request.email,
         "qr_code": qr_code
     }
 
 
 @app.post("/login")
 def login(request: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(
-        User.username == request.username
+    start_time = time.time()  
+    user = db.query(User).filter(User.email == request.email).first()
+
+    if not user or not verify_password(request.password, user.password_hash):
+        db.add(LoginAttempt(email=request.email, success=False))
+        db.commit()
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    db.add(LoginAttempt(email=request.email, success=True))
+    db.commit()
+
+    totp_factor = db.query(MFAFactor).filter(
+        MFAFactor.user_id == user.id,
+        MFAFactor.factor_type == "totp"
     ).first()
 
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+    totp_uri = pyotp.totp.TOTP(totp_factor.secret).provisioning_uri(
+        name=user.email,
+        issuer_name="MFA-Cryptography-Project"
+    )
 
-    if not verify_password(request.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+    qr_code = create_qr_code_base64(totp_uri)
+
+    end_time = time.time()   
+
+    execution_time = (end_time - start_time) * 1000 
+    print(f"Login time: {execution_time:.2f} ms")
 
     return {
         "message": "Password verified. Please enter OTP.",
-        "username": user.username,
-        "requires_otp": True
+        "email": user.email,
+        "requires_otp": True,
+        "qr_code": qr_code
     }
-
 
 @app.post("/verify-otp")
 def verify_otp(request: OTPRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(
-        User.username == request.username
-    ).first()
+    start_time = time.time()
+
+    user = db.query(User).filter(User.email == request.email).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if not verify_totp(user.otp_secret, request.otp_code):
+    totp_factor = db.query(MFAFactor).filter(
+        MFAFactor.user_id == user.id,
+        MFAFactor.factor_type == "totp"
+    ).first()
+
+    if not totp_factor:
+        raise HTTPException(status_code=404, detail="TOTP factor not found")
+
+    if not verify_totp(totp_factor.secret, request.otp_code):
         raise HTTPException(status_code=401, detail="Invalid OTP code")
 
     if not request.biometric_verified:
         raise HTTPException(status_code=401, detail="Biometric verification failed")
 
+    jwt_start = time.time()
+
     token = create_access_token(
-        data={"sub": user.username}
+        data={"sub": user.email}
     )
+
+    jwt_end = time.time()
+    jwt_time = (jwt_end - jwt_start) * 1000
+    print(f"JWT generation time: {jwt_time:.2f} ms")
+
+    end_time = time.time()
+    execution_time = (end_time - start_time) * 1000
+    print(f"OTP verification time: {execution_time:.2f} ms")
 
     return {
         "message": "MFA verification successful",
         "access_token": token,
         "token_type": "bearer"
     }
-
-
 @app.get("/dashboard")
 def dashboard(authorization: str = Header(None)):
     if authorization is None:

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import API from "../api";
 
 function Login() {
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
 
@@ -14,12 +14,12 @@ function Login() {
 
     try {
       const res = await API.post("/login", {
-        username,
+        email,
         password,
       });
 
-      localStorage.setItem("username", res.data.username);
-      setMessage(res.data.message);
+      localStorage.setItem("email", res.data.email);
+      localStorage.setItem("qr_code", res.data.qr_code);
 
       navigate("/verify-otp");
     } catch (err) {
@@ -33,10 +33,10 @@ function Login() {
 
       <form onSubmit={handleLogin}>
         <input
-          type="text"
-          placeholder="Username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
+          type="email"
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
         />
 
         <br /><br />
