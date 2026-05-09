@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16
+    container_name: mfa_postgres
+    environment:
+      POSTGRES_DB: mfa_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 123456
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./DB/schema.sql:/docker-entrypoint-initdb.d/database_schema.sql
+
+  backend:
+    build: ./backend
+    container_name: mfa_backend
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://postgres:123456@db:5432/mfa_db
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: mfa_frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"
